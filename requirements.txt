@@ -1,0 +1,7 @@
+mysql-connector
+mysql-connector-python
+customtkinter
+bcrypt
+matplotlib
+CTkMessagebox
+Pillow
