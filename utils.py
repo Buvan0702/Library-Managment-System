@@ -1,116 +1,256 @@
-from config import Config
 import mysql.connector
-from PIL import Image, ImageTk
+from tkinter import messagebox
 import os
-import tkinter as tk
+import json
+import hashlib
+from datetime import datetime, timedelta
+from config import DB_CONFIG, DB_NAME, USER_SESSION_FILE, ADMIN_SESSION_FILE
 
-# Connect to the database
-def connect_to_database():
-    """Establish and return a connection to the MySQL database"""
-    conn = mysql.connector.connect(
-        host=Config.db_host,
-        user=Config.user,
-        password=Config.password,
-        database=Config.database,
-        auth_plugin='mysql_native_password'  # Added for MySQL 8.0+ compatibility
-    )
-    return conn
-
-def center_window(window, width=900, height=600):
-    """Centers a given window on the screen."""
-    screen_width = window.winfo_screenwidth()
-    screen_height = window.winfo_screenheight()
-    x = (screen_width - width) // 2
-    y = (screen_height - height) // 2
-    window.geometry(f"{width}x{height}+{x}+{y}")
-
-def load_and_resize_image(image_path, width, height):
-    """Load and resize an image to the specified dimensions"""
-    if not os.path.exists(image_path):
-        print(f"Image not found: {image_path}")
-        return None
-    
+# ------------------- Database Utility Functions -------------------
+def connect_db():
+    """Connect to the database"""
     try:
-        img = Image.open(image_path)
-        img = img.resize((width, height), Image.LANCZOS)
-        return ImageTk.PhotoImage(img)
-    except Exception as e:
-        print(f"Error loading image {image_path}: {e}")
+        return mysql.connector.connect(**DB_CONFIG)
+    except mysql.connector.Error as err:
+        messagebox.showerror("Database Connection Error", f"Failed to connect to database: {err}")
         return None
 
-def create_tables():
-    """
-    Creates the necessary tables for the Library Management System.
-    Tables include users, books, borrowed_books, and fines.
-    """
-    queries = {
-        "users": """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INT NOT NULL AUTO_INCREMENT,
+def verify_database():
+    """Verify that the database and tables exist"""
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        if not connection:
+            return False
+        
+        cursor = connection.cursor()
+        
+        # Check if tables exist
+        tables = ["Books", "Users", "Loans", "Fines"]
+        for table in tables:
+            cursor.execute(f"SHOW TABLES LIKE '{table}'")
+            if not cursor.fetchone():
+                return False
+        
+        return True
+    except mysql.connector.Error:
+        return False
+    finally:
+        if 'connection' in locals() and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def create_database():
+    """Create the library_system database and tables"""
+    try:
+        # Connect without database selected
+        connection = mysql.connector.connect(
+            host=DB_CONFIG["host"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"]
+        )
+        cursor = connection.cursor()
+        
+        # Create database
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
+        cursor.execute(f"USE {DB_NAME}")
+        
+        # Create Users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Users (
+                user_id INT AUTO_INCREMENT PRIMARY KEY,
                 first_name VARCHAR(50) NOT NULL,
                 last_name VARCHAR(50) NOT NULL,
                 email VARCHAR(100) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
-                user_type ENUM('student', 'admin', 'lecturer') NOT NULL,
-                status VARCHAR(20) NOT NULL DEFAULT 'active',
-                date_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id)
-            );
-        """,
-        "books": """
-            CREATE TABLE IF NOT EXISTS books (
-                book_id INT NOT NULL AUTO_INCREMENT,
+                role ENUM('member', 'admin') DEFAULT 'member',
+                registration_date DATE DEFAULT (CURRENT_DATE),
+                CONSTRAINT email_unique UNIQUE (email)
+            )
+        """)
+        
+        # Create Books table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Books (
+                book_id INT AUTO_INCREMENT PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
                 author VARCHAR(100) NOT NULL,
                 isbn VARCHAR(20) UNIQUE,
-                genre VARCHAR(50),
                 publication_year INT,
-                publisher VARCHAR(100),
-                total_copies INT NOT NULL DEFAULT 1,
-                available_copies INT NOT NULL DEFAULT 1,
-                date_added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (book_id)
-            );
-        """,
-        "borrowed_books": """
-            CREATE TABLE IF NOT EXISTS borrowed_books (
-                borrow_id INT NOT NULL AUTO_INCREMENT,
-                user_id INT NOT NULL,
-                book_id INT NOT NULL,
-                borrow_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                due_date TIMESTAMP NOT NULL,
-                return_date TIMESTAMP NULL,
-                fine_amount DECIMAL(10, 2) DEFAULT 0.00,
-                fine_paid BOOLEAN DEFAULT FALSE,
-                status ENUM('borrowed', 'returned', 'overdue') NOT NULL DEFAULT 'borrowed',
-                PRIMARY KEY (borrow_id),
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-                FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE CASCADE
-            );
-        """,
-        "fines": """
-            CREATE TABLE IF NOT EXISTS fines (
-                fine_id INT NOT NULL AUTO_INCREMENT,
-                borrow_id INT NOT NULL,
-                user_id INT NOT NULL,
+                genre VARCHAR(50),
+                description TEXT,
+                total_copies INT DEFAULT 1,
+                available_copies INT DEFAULT 1
+            )
+        """)
+        
+        # Create Loans table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Loans (
+                loan_id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT,
+                book_id INT,
+                loan_date DATE DEFAULT (CURRENT_DATE),
+                due_date DATE,
+                return_date DATE NULL,
+                FOREIGN KEY (user_id) REFERENCES Users(user_id),
+                FOREIGN KEY (book_id) REFERENCES Books(book_id)
+            )
+        """)
+        
+        # Create Fines table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Fines (
+                fine_id INT AUTO_INCREMENT PRIMARY KEY,
+                loan_id INT,
                 amount DECIMAL(10, 2) NOT NULL,
+                description VARCHAR(255),
                 paid BOOLEAN DEFAULT FALSE,
-                payment_date TIMESTAMP NULL,
-                PRIMARY KEY (fine_id),
-                FOREIGN KEY (borrow_id) REFERENCES borrowed_books(borrow_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            );
-        """
-    }
+                payment_date DATE NULL,
+                FOREIGN KEY (loan_id) REFERENCES Loans(loan_id)
+            )
+        """)
+        
+        # Check if there's at least one admin user
+        cursor.execute("SELECT COUNT(*) FROM Users WHERE role = 'admin'")
+        admin_count = cursor.fetchone()[0]
+        
+        # Create default admin if none exists
+        if admin_count == 0:
+            default_password = hashlib.sha256("admin123".encode()).hexdigest()
+            
+            cursor.execute("""
+                INSERT INTO Users (first_name, last_name, email, password, role)
+                VALUES ('Admin', 'User', 'admin@library.com', %s, 'admin')
+            """, (default_password,))
+        
+        # Insert sample book data if the Books table is empty
+        cursor.execute("SELECT COUNT(*) FROM Books")
+        book_count = cursor.fetchone()[0]
+        
+        if book_count == 0:
+            sample_books = [
+                ("The Great Gatsby", "F. Scott Fitzgerald", "9780743273565", 1925, "Fiction", "A novel about the American Dream", 5, 5),
+                ("To Kill a Mockingbird", "Harper Lee", "9780061120084", 1960, "Fiction", "Classic novel of racial injustice", 3, 3),
+                ("1984", "George Orwell", "9780451524935", 1949, "Dystopian", "Dystopian social science fiction", 4, 4),
+                ("Pride and Prejudice", "Jane Austen", "9780141439518", 1813, "Romance", "A romantic novel of manners", 2, 2),
+                ("The Hobbit", "J.R.R. Tolkien", "9780547928227", 1937, "Fantasy", "Fantasy novel and prelude to Lord of the Rings", 3, 3),
+                ("The Catcher in the Rye", "J.D. Salinger", "9780316769488", 1951, "Fiction", "Story of teenage angst and alienation", 2, 2),
+                ("The Lord of the Rings", "J.R.R. Tolkien", "9780618640157", 1954, "Fantasy", "Epic high-fantasy novel", 3, 3),
+                ("Animal Farm", "George Orwell", "9780451526342", 1945, "Satire", "Allegorical novella", 4, 4),
+                ("The Da Vinci Code", "Dan Brown", "9780307474278", 2003, "Mystery", "Mystery thriller novel", 5, 5),
+                ("Harry Potter and the Sorcerer's Stone", "J.K. Rowling", "9780590353427", 1997, "Fantasy", "Fantasy novel", 6, 6)
+            ]
+            
+            cursor.executemany("""
+                INSERT INTO Books (title, author, isbn, publication_year, genre, description, total_copies, available_copies)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, sample_books)
+        
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        messagebox.showerror("Database Setup Error", f"Failed to set up database: {err}")
+        return False
+    finally:
+        if 'connection' in locals() and connection.is_connected():
+            cursor.close()
+            connection.close()
 
+# ------------------- Session Utility Functions -------------------
+def load_user_session():
+    """Load user data from session file"""
     try:
-        conn = connect_to_database()
-        cursor = conn.cursor()
-        for table_name, query in queries.items():
-            cursor.execute(query)
-        conn.commit()
-        print("Tables created successfully!")
-        cursor.close()
-        conn.close()
+        if os.path.exists(USER_SESSION_FILE):
+            with open(USER_SESSION_FILE, 'r') as f:
+                return json.load(f)
+        return None
     except Exception as e:
-        print(f"Error creating tables: {e}")
+        messagebox.showerror("Session Error", f"Failed to load session: {e}")
+        return None
+
+def save_user_session(user_data):
+    """Save user data to session file"""
+    with open(USER_SESSION_FILE, 'w') as f:
+        json.dump(user_data, f)
+
+def clear_user_session():
+    """Delete the user session file"""
+    if os.path.exists(USER_SESSION_FILE):
+        os.remove(USER_SESSION_FILE)
+
+def load_admin_session():
+    """Load admin session data"""
+    try:
+        if os.path.exists(ADMIN_SESSION_FILE):
+            with open(ADMIN_SESSION_FILE, 'r') as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        messagebox.showerror("Session Error", f"Failed to load session: {e}")
+        return None
+
+def save_admin_session(admin_data):
+    """Save admin session data"""
+    with open(ADMIN_SESSION_FILE, 'w') as f:
+        json.dump(admin_data, f)
+
+def clear_admin_session():
+    """Delete the admin session file"""
+    if os.path.exists(ADMIN_SESSION_FILE):
+        os.remove(ADMIN_SESSION_FILE)
+
+# ------------------- Date Utility Functions -------------------
+def format_date(date_str):
+    """Format date string to more readable format"""
+    try:
+        if isinstance(date_str, datetime):
+            return date_str.strftime('%b %d, %Y')
+        
+        date_obj = datetime.strptime(str(date_str), '%Y-%m-%d')
+        return date_obj.strftime('%b %d, %Y')
+    except:
+        return str(date_str)
+
+def calculate_fine(due_date_str):
+    """Calculate fine if book is overdue"""
+    try:
+        if isinstance(due_date_str, datetime):
+            due_date = due_date_str
+        else:
+            due_date = datetime.strptime(str(due_date_str), '%Y-%m-%d')
+        
+        today = datetime.now()
+        
+        if today > due_date:
+            days_overdue = (today - due_date).days
+            fine = days_overdue * 0.50  # $0.50 per day
+            return f"${fine:.2f}"
+        return "$0.00"
+    except Exception as e:
+        print(f"Error calculating fine: {e}")
+        return "$0.00"
+
+def is_overdue(due_date_str):
+    """Check if a book is overdue"""
+    try:
+        if isinstance(due_date_str, datetime):
+            due_date = due_date_str
+        else:
+            due_date = datetime.strptime(str(due_date_str), '%Y-%m-%d')
+        
+        return datetime.now() > due_date
+    except Exception as e:
+        print(f"Error checking overdue: {e}")
+        return False
+
+def format_currency(amount):
+    """Format amount as currency"""
+    try:
+        return f"${float(amount):.2f}"
+    except:
+        return f"${0:.2f}"
+
+# ------------------- Password Utility Functions -------------------
+def hash_password(password):
+    """Hash password using SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
