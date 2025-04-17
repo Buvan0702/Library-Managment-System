@@ -6,7 +6,7 @@ class Config():
     smtp_password = ""
     db_host = '127.0.0.1'
     user = 'root'
-    password = 'your_password'  # Replace with your MySQL password
+    password = 'new_password'  # Replace with your MySQL password
     database = 'librarymanagementdb'
 
     @classmethod
