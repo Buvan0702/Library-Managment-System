@@ -11,7 +11,8 @@ def connect_to_database():
         host=Config.db_host,
         user=Config.user,
         password=Config.password,
-        database=Config.database
+        database=Config.database,
+        auth_plugin='mysql_native_password'  # Added for MySQL 8.0+ compatibility
     )
     return conn
 
