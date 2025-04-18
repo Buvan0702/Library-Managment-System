@@ -3,6 +3,8 @@ from tkinter import messagebox
 import os
 import json
 import hashlib
+import random
+import string
 from datetime import datetime, timedelta
 from config import DB_CONFIG, DB_NAME, USER_SESSION_FILE, ADMIN_SESSION_FILE
 
@@ -54,7 +56,7 @@ def create_database():
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
         cursor.execute(f"USE {DB_NAME}")
         
-        # Create Users table
+        # Create Users table with secret column
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS Users (
                 user_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -62,6 +64,7 @@ def create_database():
                 last_name VARCHAR(50) NOT NULL,
                 email VARCHAR(100) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
+                secret VARCHAR(50) NOT NULL,
                 role ENUM('member', 'admin') DEFAULT 'member',
                 registration_date DATE DEFAULT (CURRENT_DATE),
                 CONSTRAINT email_unique UNIQUE (email)
@@ -117,11 +120,12 @@ def create_database():
         # Create default admin if none exists
         if admin_count == 0:
             default_password = hashlib.sha256("admin123".encode()).hexdigest()
+            admin_secret = generate_secret()
             
             cursor.execute("""
-                INSERT INTO Users (first_name, last_name, email, password, role)
-                VALUES ('Admin', 'User', 'admin@library.com', %s, 'admin')
-            """, (default_password,))
+                INSERT INTO Users (first_name, last_name, email, password, secret, role)
+                VALUES ('Admin', 'User', 'admin@library.com', %s, %s, 'admin')
+            """, (default_password, admin_secret))
         
         # Insert sample book data if the Books table is empty
         cursor.execute("SELECT COUNT(*) FROM Books")
@@ -254,3 +258,44 @@ def format_currency(amount):
 def hash_password(password):
     """Hash password using SHA-256"""
     return hashlib.sha256(password.encode()).hexdigest()
+
+def generate_secret(length=12):
+    """Generate a random secret key"""
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def update_password(email, secret, new_password):
+    """Update user password using email and secret"""
+    try:
+        connection = connect_db()
+        if not connection:
+            return False, "Database connection error"
+            
+        cursor = connection.cursor()
+        
+        # Check if email and secret match
+        cursor.execute(
+            "SELECT user_id FROM Users WHERE email = %s AND secret = %s",
+            (email, secret)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            return False, "Invalid email or secret key"
+        
+        # Update the password
+        hashed_password = hash_password(new_password)
+        cursor.execute(
+            "UPDATE Users SET password = %s WHERE user_id = %s",
+            (hashed_password, user[0])
+        )
+        
+        connection.commit()
+        return True, "Password updated successfully"
+    
+    except mysql.connector.Error as err:
+        return False, f"Database error: {str(err)}"
+    finally:
+        if 'connection' in locals() and connection.is_connected():
+            cursor.close()
+            connection.close()
