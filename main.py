@@ -161,8 +161,8 @@ class LibraryManagementSystem:
     def open_admin(self):
         """Open the admin page"""
         self.root.destroy()
-        from admin.admin_dashboard import run_admin
-        run_admin()
+        from auth import admin_window
+        admin_window()
 
 # ------------------- Main Execution -------------------
 if __name__ == "__main__":

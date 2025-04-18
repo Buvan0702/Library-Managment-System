@@ -8,7 +8,205 @@ import mysql.connector
 
 from config import DB_CONFIG
 from utils import connect_db, hash_password, save_user_session, generate_secret, update_password
+def admin_window():
+    """Create and run the admin login window"""
+    # Initialize the window
+    root = ctk.CTk()
+    root.title("Admin Login")
+    root.geometry("800x600")
+    root.resizable(False, False)
 
+    # Create main frame with rounded corners
+    main_frame = ctk.CTkFrame(root, fg_color="white", corner_radius=15)
+    main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+    # Add login heading
+    heading_label = ctk.CTkLabel(
+        main_frame, 
+        text="Admin Login", 
+        font=ctk.CTkFont(family="Arial", size=32, weight="bold"),
+        text_color="#15883e"
+    )
+    heading_label.pack(pady=(100, 10))
+
+    # Add descriptive text
+    desc_label = ctk.CTkLabel(
+        main_frame,
+        text="Enter your administrator credentials to access the system",
+        font=ctk.CTkFont(family="Arial", size=12),
+        text_color="gray"
+    )
+    desc_label.pack(pady=(0, 30))
+
+    # Email Entry
+    email_label = ctk.CTkLabel(
+        main_frame,
+        text="Email Address",
+        font=ctk.CTkFont(family="Arial", size=14, weight="bold"),
+        text_color="#333333",
+        anchor="w"
+    )
+    email_label.pack(anchor="w", padx=200, pady=(0, 5))
+
+    email_entry = ctk.CTkEntry(
+        main_frame,
+        width=400,
+        height=40,
+        font=ctk.CTkFont(family="Arial", size=13),
+        border_width=1,
+        corner_radius=5,
+        placeholder_text="Enter admin email"
+    )
+    email_entry.pack(pady=(0, 20))
+
+    # Password Entry Label
+    password_label = ctk.CTkLabel(
+        main_frame,
+        text="Password",
+        font=ctk.CTkFont(family="Arial", size=14, weight="bold"),
+        text_color="#333333",
+        anchor="w"
+    )
+    password_label.pack(anchor="w", padx=200, pady=(0, 5))
+
+    # Container frame to hold password entry and visibility button
+    password_container = ctk.CTkFrame(main_frame, fg_color="transparent", width=400, height=40)
+    password_container.pack(pady=(0, 10))
+    password_container.pack_propagate(False)
+
+    # Password entry field
+    password_entry = ctk.CTkEntry(
+        password_container,
+        font=ctk.CTkFont(family="Arial", size=13),
+        border_width=1,
+        corner_radius=5,
+        show="•",
+        placeholder_text="Enter admin password",
+        width=350,
+        height=40
+    )
+    password_entry.place(x=0, y=0)
+
+    # Password visibility toggle
+    def toggle_password_visibility():
+        if password_entry.cget("show") == "•":
+            password_entry.configure(show="")
+            visibility_button.configure(text="👁️")
+        else:
+            password_entry.configure(show="•")
+            visibility_button.configure(text="👁️‍🗨️")
+
+    visibility_button = ctk.CTkButton(
+        password_container,
+        text="👁️‍🗨️",
+        font=ctk.CTkFont(size=14),
+        width=35,
+        height=40,
+        fg_color="#f0f0f0",
+        text_color="#333333",
+        hover_color="#e0e0e0",
+        corner_radius=5,
+        command=toggle_password_visibility
+    )
+    visibility_button.place(x=360, y=0)
+
+    # Error message label
+    error_label = ctk.CTkLabel(
+        main_frame,
+        text="",
+        font=ctk.CTkFont(size=12),
+        text_color="#d32f2f"
+    )
+    error_label.pack(pady=(10, 10))
+
+    # Admin Login Action
+    def admin_login_action():
+        email = email_entry.get().strip()
+        password = password_entry.get()
+
+        if not email or not password:
+            error_label.configure(text="Please enter both email and password.")
+            return
+
+        # Hash the password
+        hashed_password = hash_password(password)
+
+        try:
+            connection = connect_db()
+            if not connection:
+                error_label.configure(text="Database connection failed.")
+                return
+                
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT user_id, first_name, last_name, email, role FROM Users WHERE email = %s AND password = %s AND role = 'admin'",
+                (email, hashed_password)
+            )
+            user = cursor.fetchone()
+
+            if user:
+                # Save user session
+                save_user_session(user)
+                
+                # Show success message
+                messagebox.showinfo("Success", f"Welcome Admin {user['first_name']} {user['last_name']}!")
+                
+                # Close the login window and open admin dashboard
+                root.destroy()
+                from admin.admin_dashboard import run_admin
+                run_admin()
+            else:
+                error_label.configure(text="Invalid Admin Credentials.")
+        
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", str(err))
+        finally:
+            if connection and connection.is_connected():
+                cursor.close()
+                connection.close()
+
+    # Login Button
+    login_button = ctk.CTkButton(
+        main_frame,
+        text="Login",
+        font=ctk.CTkFont(family="Arial", size=14, weight="bold"),
+        corner_radius=5,
+        height=45,
+        width=400,
+        fg_color="#15883e",
+        hover_color="#0d6f2f",
+        text_color="white",
+        command=admin_login_action
+    )
+    login_button.pack(pady=(20, 20))
+
+    # Back to Main Window Button
+    def back_to_main():
+        root.destroy()
+        from main import LibraryManagementSystem
+        root = ctk.CTk()
+        LibraryManagementSystem(root)
+        root.mainloop()
+
+    back_button = ctk.CTkButton(
+        main_frame,
+        text="Back to Main Menu",
+        font=ctk.CTkFont(family="Arial", size=12),
+        fg_color="transparent",
+        hover_color="#f0f0f0",
+        text_color="#15883e",
+        corner_radius=5,
+        height=30,
+        width=400,
+        command=back_to_main
+    )
+    back_button.pack(pady=(0, 20))
+
+    # Bind Enter key to login action
+    password_entry.bind("<Return>", lambda event: admin_login_action())
+
+    # Start the application
+    root.mainloop()
 # ------------------- Password Validation -------------------
 def check_password_strength(password):
     """Check password strength and return feedback"""
